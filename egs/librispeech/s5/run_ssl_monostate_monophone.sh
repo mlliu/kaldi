@@ -10,24 +10,38 @@ data=/export/a15/vpanayotov/data
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=8 # start from stage 6
-stop_stage=13
+stage=10 # start from stage 6
+stop_stage=10
 skip_stages=
-feat_type=wavlm #lda80_wavlm #wavlm
-datadir=data/${feat_type} # to store the scp file
-expdir=exp/${feat_type}_1000beam_nodelta_trans # to store the experiment
-featdir=feat/${feat_type} # to store the feature itself
+skip_train=false # if true, skip the training stages, just run the decoding stages, which is stage 13
 
+feat_type=wavlm  #lda80_wavlm #wavlm
+datadir=data/${feat_type} # to store the scp file
+expdir=exp/${feat_type}_1000beam_nodelta_trans_monostate_monophone # to store the experiment
+featdir=feat/${feat_type} # to store the feature itself
+langdir=data/lang_nosp_monostate # the language model folder, contains phones.txt, words.txt, topo, L.fst, etc.
 n_beam=100
 n_retry_beam=1000
+
+# setup the train, dev and test set
+train_set="train_clean_100"
+#train_dev="dev"
+test_sets="test_clean test_other dev_clean dev_other" #"eval2000"
+
 
 . ./cmd.sh
 . ./path.sh
 . parse_options.sh
 
+
+
 # you might not want to do this for interactive shells.
 set -e
 
+if $skip_train; then
+  skip_stages+=" 8 9 10 11 12 14"
+fi
+echo "skip stages: ${skip_stages}"
 
 if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ] && ! [[ " ${skip_stages} " =~ [[:space:]]1[[:space:]] ]]; then
   # download the data.  Note: we're using the 100 hour setup for
@@ -129,7 +143,7 @@ if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ] && ! [[ " ${skip_stages} " =~ [
     echo "0.02" >> ${datadir}/${part}/frame_shift
     fi
     # if fake, then no cmvn is applied
-    steps/compute_cmvn_stats.sh ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
+    steps/compute_cmvn_stats.sh --fake ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
   done
 fi
 
@@ -154,113 +168,217 @@ if [ ${stage} -le 8 ] && [ ${stop_stage} -ge 8 ] && ! [[ " ${skip_stages} " =~ [
 # we use train_mono_nodelta.sh instead of train_mono.sh, because we don't need delta features for the wavlm
    steps/train_mono_nodelta.sh --boost-silence 1.25 --nj 20 --cmd "$train_cmd" \
 	               --initial_beam 10 --regular_beam ${n_beam} --retry_beam ${n_retry_beam} \
-                       ${datadir}/train_2kshort data/lang_nosp ${expdir}/mono
+	               --num_iters 40  --totgauss 2000 \
+	               ${datadir}/train_clean_100 ${langdir} ${expdir}/mono
+#                       ${datadir}/train_2kshort ${langdir} ${expdir}/mono
 fi
-
 if [ ${stage} -le 9 ] && [ ${stop_stage} -ge 9 ] && ! [[ " ${skip_stages} " =~ [[:space:]]9[[:space:]] ]]; then
+  # get the alignments for the monophone system
 #  steps/align_si.sh --boost-silence 1.25 --nj 10 --cmd "$train_cmd" \
 #                    data/train_5k data/lang_nosp exp/mono exp/mono_ali_5k
   steps/align_si_nodelta.sh --boost-silence 1.25 --nj 10 --cmd "$train_cmd" \
 		    --beam ${n_beam} --retry_beam ${n_retry_beam} \
-                    ${datadir}/train_5k data/lang_nosp ${expdir}/mono ${expdir}/mono_ali_5k
-
-  # train a first delta + delta-delta triphone system on a subset of 5000 utterances
-#  steps/train_deltas.sh --boost-silence 1.25 --cmd "$train_cmd" \
-#                        2000 10000 data/train_5k data/lang_nosp exp/mono_ali_5k exp/tri1
-  steps/train_deltas_nodelta.sh --boost-silence 1.25 --cmd "$train_cmd" \
-	                --beam ${n_beam} --retry_beam ${n_retry_beam} \
-                        2000 10000 ${datadir}/train_5k data/lang_nosp ${expdir}/mono_ali_5k ${expdir}/tri1
+                    ${datadir}/train_clean_100 ${langdir} ${expdir}/mono ${expdir}/mono_train_clean_100
 fi
-
 if [ ${stage} -le 10 ] && [ ${stop_stage} -ge 10 ] && ! [[ " ${skip_stages} " =~ [[:space:]]10[[:space:]] ]]; then
-#  steps/align_si.sh --nj 10 --cmd "$train_cmd" \
-#                    data/train_10k data/lang_nosp exp/tri1 exp/tri1_ali_10k
-  steps/align_si_nodelta.sh --nj 10 --cmd "$train_cmd" \
-	             --beam ${n_beam} --retry_beam ${n_retry_beam} \
-                    ${datadir}/train_10k data/lang_nosp ${expdir}/tri1 ${expdir}/tri1_ali_10k
+  echo "build the unigram uniform phone-level language model"
+  # build the bigram phone-level Language model
+  phone_lang=data/phone_lang_monostate
+  #lang=data/lang_nosp replace by the ${langdir}
+  #alidir=exp/tri4b_${num_leaves}/align_train_clean_100
+  #utils/lang/make_phone_bigram_lang.sh ${langdir} $alidir $phone_lang
 
+  # decode using the tri4b model and generate the decoding alignment
+  graphdir=${expdir}/mono/graph_phone_bg
+  utils/mkgraph.sh $phone_lang \
+                   ${expdir}/mono ${graphdir}
+  if "${skip_train}"; then
+    _dsets="${test_sets}"
+  else
+    _dsets="${test_sets} ${train_set}"
+  fi
+  for test in ${_dsets}; do
+  #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
+      echo "step 1: decode the ${test} set,generate the lattice "
+      #if [ ${test} == "train_clean_100" ]; then
+      #  _nj=20
+      #  skip_scoring=true
+      #else
+      #  _nj=10
+      #  skip_scoring=false
+      #fi
+      skip_scoring=true
+      _nj=20
+#      target_folder=${expdir}/mono/decode_phonelm_${test}
+#      steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+#                            --skip_scoring $skip_scoring \
+#                            ${graphdir} ${datadir}/${test} \
+#                            ${target_folder}
 
-  # train an LDA+MLLT system.
-#  steps/train_lda_mllt.sh --cmd "$train_cmd" \
-#                          --splice-opts "--left-context=3 --right-context=3" 2500 15000 \
-#                          data/train_10k data/lang_nosp exp/tri1_ali_10k exp/tri2b
-#  steps/train_lda_mllt.sh --cmd "$train_cmd" \
-#			  --beam ${q} --retry_beam ${n_retry_beam} \
-#                          --splice-opts "--left-context=3 --right-context=3" 2500 15000 \
-#                          ${datadir}/train_10k data/lang_nosp ${expdir}/tri1_ali_10k ${expdir}/tri2b
+      # no delta features and no transform-feats
+      acwt=0.083333 # Acoustic weight used in getting fMLLR transforms, and also in lattice generation.
+#     # may be change the number of beam and the number of max-active to achieve more accurate decoding
+      target_folder=${expdir}/mono/decode_phonelm_${test}
+      model=${expdir}/mono/final.mdl
+      steps/decode_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+                            --skip_scoring $skip_scoring \
+                            --acwt $acwt --beam 16 \
+                            --max-active 7000 \
+                            --model ${model} \
+                            ${graphdir} ${datadir}/${test} \
+                            ${target_folder} || exit 1;
+      echo "step 2: generate the 1-bet path through lattices, and convert it to gaussian-level posterior"
 
-# no delta features but with transform-feats, lda feature is actually calculated based on no-delat feature
-  steps/train_lda_mllt.sh --cmd "$train_cmd" \
-			  --beam ${n_beam} --retry_beam ${n_retry_beam} \
-                          --splice-opts "--left-context=3 --right-context=3" 2500 15000 \
-                          ${datadir}/train_10k data/lang_nosp ${expdir}/tri1_ali_10k ${expdir}/tri2b
+#      for i in $(seq 1 ${_nj}); do
+#         lattice-best-path "ark,t:gunzip -c $target_folder/lat.$i.gz|" \
+#              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.$i" \
+#              "ark:|gzip -c >$target_folder/ali.$i.gz" 2>/dev/null || exit 1;
+#      done
+#
+#      echo "step 3: extract pdf-id"
+#      for i in ${target_folder}/ali.*.gz;
+#      do ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
+#              "ark,t:gunzip -c $i|" ark,t:${i%.gz}.pdf;
+#      done
+      # combine the lattice-best-path and ali-to-pdf with a pipe, so the output of the first command is the input of the second command
+      # and we don't need to store the intermediate result $target_folder/ali.$i.gz"
 
-# no delta features and no transform-feats
-#  steps/train_deltas_nodelta.sh --boost-silence 1.25 --cmd "$train_cmd" \
-#	                --beam ${n_beam} --retry_beam ${n_retry_beam} \
-#                        2500 15000 ${datadir}/train_10k data/lang_nosp ${expdir}/tri1_ali_10k ${expdir}/tri2b
+      #combine the lattice-best-path and ali-to-post, gmm-post-to-gpost with a pipe, so the output of the first command is the input of the second command
+      sdata=${datadir}/${test}/split${_nj}
+      cmvn_opts=`cat ${expdir}/mono/cmvn_opts 2>/dev/null`
+      feats="ark,s,cs:apply-cmvn --norm-vars=false --utt2spk=ark:${sdata}/JOB/utt2spk scp:${sdata}/JOB/cmvn.scp scp:${sdata}/JOB/feats.scp ark:- |"
+
+      $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
+         lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
+              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
+              ali-to-post ark:- ark:- \| \
+              gmm-post-to-gpost $model "$feats" ark:- ark,t:${target_folder}/gpost.JOB || exit 1;
+
+      echo "echo3: covert the gpost to gaussian-id"
+      #cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
+      cat ${target_folder}/gpost.* > ${target_folder}/mono_${test}_decode_gpost
+      # call the convert_gpost_to_gaussid.py to convert the gpost to gaussid
+      python convert_gpost_pid.py ${target_folder}/../final.mdl.txt ${target_folder}/mono_${test}_decode_gpost ${target_folder}/mono_${test}_decode_gaussid
+
+  done
 fi
 
-if [ ${stage} -le 11 ] && [ ${stop_stage} -ge 11 ] && ! [[ " ${skip_stages} " =~ [[:space:]]11[[:space:]] ]]; then
-  #echo "skip stage 11 when don't apply the transform-feats"
-  # Align a 10k utts subset using the tri2b model
-#  steps/align_si.sh  --nj 10 --cmd "$train_cmd" --use-graphs true \
-#                     data/train_10k data/lang_nosp exp/tri2b exp/tri2b_ali_10k
-  steps/align_si_nodelta.sh  --nj 10 --cmd "$train_cmd" --use-graphs true \
-                     --beam ${n_beam} --retry_beam ${n_retry_beam} \
-                     ${datadir}/train_10k data/lang_nosp ${expdir}/tri2b ${expdir}/tri2b_ali_10k
-
-  # Train tri3b, which is LDA+MLLT+SAT on 10k utts
-#  steps/train_sat.sh --cmd "$train_cmd" 2500 15000 \
-#                     data/train_10k data/lang_nosp exp/tri2b_ali_10k exp/tri3b
-  steps/train_sat_nodelta.sh --cmd "$train_cmd"\
-	  	     --beam ${n_beam} --retry_beam ${n_retry_beam} \
-		     2500 15000 \
-                     ${datadir}/train_10k data/lang_nosp ${expdir}/tri2b_ali_10k ${expdir}/tri3b
+#if [ ${stage} -le 9 ] && [ ${stop_stage} -ge 9 ] && ! [[ " ${skip_stages} " =~ [[:space:]]9[[:space:]] ]]; then
+##  steps/align_si.sh --boost-silence 1.25 --nj 10 --cmd "$train_cmd" \
+##                    data/train_5k data/lang_nosp exp/mono exp/mono_ali_5k
+#  steps/align_si_nodelta.sh --boost-silence 1.25 --nj 10 --cmd "$train_cmd" \
+#		    --beam ${n_beam} --retry_beam ${n_retry_beam} \
+#                    ${datadir}/train_5k ${langdir} ${expdir}/mono ${expdir}/mono_ali_5k
+#
+#  # train a first delta + delta-delta triphone system on a subset of 5000 utterances
+##  steps/train_deltas.sh --boost-silence 1.25 --cmd "$train_cmd" \
+##                        2000 10000 data/train_5k data/lang_nosp exp/mono_ali_5k exp/tri1
+#
+# # pdf_class_list=0 for 1-state HMM model
 #  steps/train_deltas_nodelta.sh --boost-silence 1.25 --cmd "$train_cmd" \
+#                  --pdf_class_list 0 \
 #	                --beam ${n_beam} --retry_beam ${n_retry_beam} \
-#                        2500 15000 ${datadir}/train_10k data/lang_nosp ${expdir}/tri2b_ali_10k ${expdir}/tri3b
-fi
-
-  num_leaves=4200 #1500
-  num_components=40000 #100000
-if [ ${stage} -le 12 ] && [ ${stop_stage} -ge 12 ] && ! [[ " ${skip_stages} " =~ [[:space:]]12[[:space:]] ]]; then
-  # align the entire train_clean_100 subset using the tri3b model
-  steps/align_fmllr_nodelta.sh --nj 20 --cmd "$train_cmd" \
-     --beam ${n_beam} --retry_beam ${n_retry_beam} \
-    ${datadir}/train_clean_100 data/lang_nosp \
-    ${expdir}/tri3b ${expdir}/tri3b_ali_clean_100
-
-# no delta features and no transform-feats
+#                        2000 10000 ${datadir}/train_5k ${langdir} ${expdir}/mono_ali_5k ${expdir}/tri1
+#fi
+#
+#if [ ${stage} -le 10 ] && [ ${stop_stage} -ge 10 ] && ! [[ " ${skip_stages} " =~ [[:space:]]10[[:space:]] ]]; then
+##  steps/align_si.sh --nj 10 --cmd "$train_cmd" \
+##                    data/train_10k data/lang_nosp exp/tri1 exp/tri1_ali_10k
+#  steps/align_si_nodelta.sh --nj 10 --cmd "$train_cmd" \
+#	             --beam ${n_beam} --retry_beam ${n_retry_beam} \
+#                    ${datadir}/train_10k ${langdir} ${expdir}/tri1 ${expdir}/tri1_ali_10k
+#
+#
+#  # train an LDA+MLLT system.
+##  steps/train_lda_mllt.sh --cmd "$train_cmd" \
+##                          --splice-opts "--left-context=3 --right-context=3" 2500 15000 \
+##                          data/train_10k data/lang_nosp exp/tri1_ali_10k exp/tri2b
+##  steps/train_lda_mllt.sh --cmd "$train_cmd" \
+##			  --beam ${q} --retry_beam ${n_retry_beam} \
+##                          --splice-opts "--left-context=3 --right-context=3" 2500 15000 \
+##                          ${datadir}/train_10k data/lang_nosp ${expdir}/tri1_ali_10k ${expdir}/tri2b
+#
+## no delta features but with transform-feats, lda feature is actually calculated based on no-delat feature
+#  steps/train_lda_mllt.sh --cmd "$train_cmd" \
+#        --pdf_class_list 0 \
+#			  --beam ${n_beam} --retry_beam ${n_retry_beam} \
+#                          --splice-opts "--left-context=3 --right-context=3" 2500 15000 \
+#                          ${datadir}/train_10k ${langdir} ${expdir}/tri1_ali_10k ${expdir}/tri2b
+#
+## no delta features and no transform-feats
+##  steps/train_deltas_nodelta.sh --boost-silence 1.25 --cmd "$train_cmd" \
+##	                --beam ${n_beam} --retry_beam ${n_retry_beam} \
+##                        2500 15000 ${datadir}/train_10k data/lang_nosp ${expdir}/tri1_ali_10k ${expdir}/tri2b
+#fi
+#
+#if [ ${stage} -le 11 ] && [ ${stop_stage} -ge 11 ] && ! [[ " ${skip_stages} " =~ [[:space:]]11[[:space:]] ]]; then
+#  #echo "skip stage 11 when don't apply the transform-feats"
+#  # Align a 10k utts subset using the tri2b model
+##  steps/align_si.sh  --nj 10 --cmd "$train_cmd" --use-graphs true \
+##                     data/train_10k data/lang_nosp exp/tri2b exp/tri2b_ali_10k
 #  steps/align_si_nodelta.sh  --nj 10 --cmd "$train_cmd" --use-graphs true \
 #                     --beam ${n_beam} --retry_beam ${n_retry_beam} \
-#                     ${datadir}/train_clean_100 data/lang_nosp ${expdir}/tri2b ${expdir}/tri2b_ali_clean_100
-
-  # train another LDA+MLLT+SAT system on the entire 100 hour subset
-  steps/train_sat_nodelta.sh  --cmd "$train_cmd" \
-	              --beam ${n_beam} --retry_beam ${n_retry_beam} \
-		      ${num_leaves} ${num_components} \
-                      ${datadir}/train_clean_100 data/lang_nosp \
-                      ${expdir}/tri3b_ali_clean_100 ${expdir}/tri4b_${num_leaves}
-#  steps/train_deltas_nodelta.sh --boost-silence 1.25 --cmd "$train_cmd" \
-#	                --beam ${n_beam} --retry_beam ${n_retry_beam} \
-#	                ${num_leaves} ${num_components} \
-#                  ${datadir}/train_clean_100 data/lang_nosp ${expdir}/tri2b_ali_clean_100 ${expdir}/tri3b_${num_leaves}
-fi
+#                     ${datadir}/train_10k ${langdir} ${expdir}/tri2b ${expdir}/tri2b_ali_10k
+#
+#  # Train tri3b, which is LDA+MLLT+SAT on 10k utts
+##  steps/train_sat.sh --cmd "$train_cmd" 2500 15000 \
+##                     data/train_10k data/lang_nosp exp/tri2b_ali_10k exp/tri3b
+#  steps/train_sat_nodelta.sh --cmd "$train_cmd"\
+#           --pdf_class_list 0 \
+#	  	     --beam ${n_beam} --retry_beam ${n_retry_beam} \
+#		     2500 15000 \
+#                     ${datadir}/train_10k ${langdir} ${expdir}/tri2b_ali_10k ${expdir}/tri3b
+##  steps/train_deltas_nodelta.sh --boost-silence 1.25 --cmd "$train_cmd" \
+##	                --beam ${n_beam} --retry_beam ${n_retry_beam} \
+##                        2500 15000 ${datadir}/train_10k data/lang_nosp ${expdir}/tri2b_ali_10k ${expdir}/tri3b
+#fi
+#
+#  num_leaves=4200 #1500
+#  num_components=40000 #100000
+#if [ ${stage} -le 12 ] && [ ${stop_stage} -ge 12 ] && ! [[ " ${skip_stages} " =~ [[:space:]]12[[:space:]] ]]; then
+#  # align the entire train_clean_100 subset using the tri3b model
+#  steps/align_fmllr_nodelta.sh --nj 20 --cmd "$train_cmd" \
+#     --beam ${n_beam} --retry_beam ${n_retry_beam} \
+#    ${datadir}/train_clean_100 ${langdir} \
+#    ${expdir}/tri3b ${expdir}/tri3b_ali_clean_100
+#
+## no delta features and no transform-feats
+##  steps/align_si_nodelta.sh  --nj 10 --cmd "$train_cmd" --use-graphs true \
+##                     --beam ${n_beam} --retry_beam ${n_retry_beam} \
+##                     ${datadir}/train_clean_100 data/lang_nosp ${expdir}/tri2b ${expdir}/tri2b_ali_clean_100
+#
+#  # train another LDA+MLLT+SAT system on the entire 100 hour subset
+#  steps/train_sat_nodelta.sh  --cmd "$train_cmd" \
+#                --pdf_class_list 0 \
+#	              --beam ${n_beam} --retry_beam ${n_retry_beam} \
+#		      ${num_leaves} ${num_components} \
+#                      ${datadir}/train_clean_100 ${langdir} \
+#                      ${expdir}/tri3b_ali_clean_100 ${expdir}/tri4b_${num_leaves}
+##  steps/train_deltas_nodelta.sh --boost-silence 1.25 --cmd "$train_cmd" \
+##	                --beam ${n_beam} --retry_beam ${n_retry_beam} \
+##	                ${num_leaves} ${num_components} \
+##                  ${datadir}/train_clean_100 data/lang_nosp ${expdir}/tri2b_ali_clean_100 ${expdir}/tri3b_${num_leaves}
+#fi
 
 if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~ [[:space:]]13[[:space:]] ]]; then
   echo "build the unigram uniform phone-level language model"
   # build the bigram phone-level Lamguage model
-  phone_lang=data/phone_lang
-  lang=data/lang_nosp
+  phone_lang=data/phone_lang_monostate
+  #lang=data/lang_nosp replace by the ${langdir}
   alidir=exp/tri4b_${num_leaves}/align_train_clean_100
-  utils/lang/make_phone_bigram_lang.sh $lang $alidir $phone_lang
+  #utils/lang/make_phone_bigram_lang.sh ${langdir} $alidir $phone_lang
 
   # decode using the tri4b model and generate the decoding alignment
   graphdir=${expdir}/tri4b_${num_leaves}/graph_phone_bg
   utils/mkgraph.sh $phone_lang \
                    ${expdir}/tri4b_${num_leaves} ${graphdir}
-  for test in train_clean_100 test_clean test_other dev_clean dev_other; do
+  if "${skip_train}"; then
+    _dsets="${test_sets}"
+  else
+    _dsets="${train_set} ${test_sets}"
+  fi
+  for test in ${_dsets}; do
+  #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
       echo "step 1: decode the ${test} set,generate the lattice "
       #if [ ${test} == "train_clean_100" ]; then
       #  _nj=20
@@ -314,25 +432,6 @@ if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~
   done
 fi
 
-if [ ${stage} -le 14 ] && [ ${stop_stage} -ge 14 ] && ! [[ " ${skip_stages} " =~ [[:space:]]14[[:space:]] ]]; then
-  # generate the forced alignment
-  for test in  train_clean_100 test_clean test_other dev_clean dev_other; do
-    echo "step 1: generate the forced alignment for ${test}"
-    target_folder=${expdir}/tri4b_${num_leaves}/align_${test}
-    steps/align_fmllr_nodelta.sh --nj 10 --cmd "$train_cmd" \
-	                  --beam ${n_beam} --retry_beam ${n_retry_beam} \
-                         ${datadir}/${test} data/lang_nosp \
-                         ${expdir}/tri4b_${num_leaves} ${target_folder}
-    echo "step 2: extract the pdf-id"
-    for i in ${target_folder}/ali.*.gz;
-    do ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
-            "ark,t:gunzip -c $i|" ark,t:${i%.gz}.pdf;
-    done
-    cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_align_pdf_alignment
-
-
-  done
-fi
 
 <<COMMENT
 

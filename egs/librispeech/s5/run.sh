@@ -4,13 +4,13 @@
 # Set this to somewhere where you want to put your data, or where
 # someone else has already put it.  You'll want to change this
 # if you're not on the CLSP grid.
-data=/export/a15/vpanayotov/data
+data=/export/corpora5
 
 # base url for downloads.
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=1
+stage=12
 
 . ./cmd.sh
 . ./path.sh
@@ -24,9 +24,9 @@ if [ $stage -le 1 ]; then
   # download the data.  Note: we're using the 100 hour setup for
   # now; later in the script we'll download more and use it to train neural
   # nets.
-  for part in dev-clean test-clean dev-other test-other train-clean-100; do
-    local/download_and_untar.sh $data $data_url $part
-  done
+  #for part in dev-clean test-clean dev-other test-other train-clean-100; do
+  #  local/download_and_untar.sh $data $data_url $part
+  #done
 
 
   # download the LM resources
@@ -147,9 +147,13 @@ if [ $stage -le 12 ]; then
     exp/tri3b exp/tri3b_ali_clean_100
 
   # train another LDA+MLLT+SAT system on the entire 100 hour subset
-  steps/train_sat.sh  --cmd "$train_cmd" 4200 40000 \
+  #steps/train_sat.sh  --cmd "$train_cmd" 4200 40000 \
+  #                    data/train_clean_100 data/lang_nosp \
+  #                    exp/tri3b_ali_clean_100 exp/tri4b
+  steps/train_sat.sh  --cmd "$train_cmd" 2500 15000 \
                       data/train_clean_100 data/lang_nosp \
-                      exp/tri3b_ali_clean_100 exp/tri4b
+                      exp/tri3b_ali_clean_100 exp/tri4b_2500
+  stage=100
 fi
 
 if [ $stage -le 13 ]; then
@@ -184,7 +188,7 @@ if [ $stage -le 14 ] && false; then
 fi
 
 if [ $stage -le 15 ]; then
-  local/download_and_untar.sh $data $data_url train-clean-360
+  #local/download_and_untar.sh $data $data_url train-clean-360
 
   # now add the "clean-360" subset to the mix ...
   local/data_prep.sh \
@@ -217,7 +221,7 @@ fi
 
 if [ $stage -le 17 ]; then
   # prepare the remaining 500 hours of data
-  local/download_and_untar.sh $data $data_url train-other-500
+  #local/download_and_untar.sh $data $data_url train-other-500
 
   # prepare the 500 hour subset.
   local/data_prep.sh \
