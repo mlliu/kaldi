@@ -12,10 +12,10 @@ lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
 stage=10 # start from stage 6
 stop_stage=10
-skip_stages=
+skip_stages= #"7 8 9"
 skip_train=false # if true, skip the training stages, just run the decoding stages, which is stage 13
 
-feat_type=wavlm  #lda80_wavlm #wavlm
+feat_type=lda80_wavlm  #lda80_wavlm #wavlm
 datadir=data/${feat_type} # to store the scp file
 expdir=exp/${feat_type}_1000beam_nodelta_trans_monostate_monophone # to store the experiment
 featdir=feat/${feat_type} # to store the feature itself
@@ -109,41 +109,63 @@ fi
 
 
 if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ] && ! [[ " ${skip_stages} " =~ [[:space:]]6[[:space:]] ]]; then
-  for part in dev_clean test_clean dev_other test_other train_clean_100; do
-    if false; then
+  #for part in dev_clean test_clean dev_other test_other train_clean_100; do
+  for part in train_clean_100_sp1.1; do
     #steps/make_mfcc.sh --cmd "$train_cmd" --nj 40 data/$part exp/make_mfcc/$part $mfccdir
-    utils/copy_data_dir.sh --validate_opts --non-print "data/${part}" "${datadir}/${part}"
+    #utils/copy_data_dir.sh --validate_opts --non-print "data/${part}" "${datadir}/${part}"
+
+    wavlmdir="/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21"
+
+    # first sort the wavlmdir
+    utils/fix_data_dir.sh "${wavlmdir}/${part}"
+
+    utils/copy_data_dir.sh --validate_opts --non-print "$wavlmdir/${part}" "${datadir}/${part}"
     # copy feat_pca80.scp to feat_pca80_wavlm.scp from the source directory to the target directory
     # and add the lbi before each line
-    source=/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21/${part}/feat_pca80.scp
-    #cp ${source} ${datadir}/${part}/feats.scp
-    target=${datadir}/${part}/feats.scp
-    # add the lbi on each line of the feats.scp
-    if [ -f ${target} ]; then
-      rm ${target}
-    fi
-    while IFS= read -r line; do
-      echo "lbi-${line}" >> ${target}
-    done < ${source}
-
-    # copy the utt2num_frames from the source directory to the target directory
-    source=/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21/${part}/utt2num_frames
-    target=${datadir}/${part}/utt2num_frames
-    if [ -f ${target} ]; then
-      rm ${target}
-    fi
-    while IFS= read -r line; do
-      echo "lbi-${line}" >> ${target}
-    done < ${source}
+#    echo "copy the wav.scp"
+#    source=$wavlmdir/${part}/wav.scp #feat_pca80.scp
+#    #cp ${source} ${datadir}/${part}/feats.scp
+#    target=${datadir}/${part}/wav.scp
+#    # add the lbi on each line of the feats.scp
+#    if [ -f ${target} ]; then
+#      rm ${target}
+#    fi
+#    while IFS= read -r line; do
+#      echo "lbi-${line}" >> ${target}
+#    done < ${source}
+#
+#    echo "copy the feat"
+#    source=$wavlmdir/${part}/feats.scp #feat_pca80.scp
+#    #cp ${source} ${datadir}/${part}/feats.scp
+#    target=${datadir}/${part}/feats.scp
+#    # add the lbi on each line of the feats.scp
+#    if [ -f ${target} ]; then
+#      rm ${target}
+#    fi
+#    while IFS= read -r line; do
+#      echo "lbi-${line}" >> ${target}
+#    done < ${source}
+#
+#   echo "copy the utt2num_frames"
+#    # copy the utt2num_frames from the source directory to the target directory
+#    source=$wavlmdir/${part}/utt2num_frames
+#    target=${datadir}/${part}/utt2num_frames
+#    if [ -f ${target} ]; then
+#      rm ${target}
+#    fi
+#    while IFS= read -r line; do
+#      echo "lbi-${line}" >> ${target}
+#    done < ${source}
 
     # rewrite the frame_shift file is 0.02
     if [ -f ${datadir}/${part}/frame_shift ]; then
       rm ${datadir}/${part}/frame_shift
     fi
     echo "0.02" >> ${datadir}/${part}/frame_shift
-    fi
+
     # if fake, then no cmvn is applied
-    steps/compute_cmvn_stats.sh --fake ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
+    echo "calculate the cmvn stats"
+    steps/compute_cmvn_stats.sh ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
   done
 fi
 
@@ -197,8 +219,10 @@ if [ ${stage} -le 10 ] && [ ${stop_stage} -ge 10 ] && ! [[ " ${skip_stages} " =~
   else
     _dsets="${test_sets} ${train_set}"
   fi
-  for test in ${_dsets}; do
+for test in ${_dsets}; do
+ #for test in train_clean_100_sp1.1; do
   #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
+      (
       echo "step 1: decode the ${test} set,generate the lattice "
       #if [ ${test} == "train_clean_100" ]; then
       #  _nj=20
@@ -253,13 +277,12 @@ if [ ${stage} -le 10 ] && [ ${stop_stage} -ge 10 ] && ! [[ " ${skip_stages} " =~
               "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
               ali-to-post ark:- ark:- \| \
               gmm-post-to-gpost $model "$feats" ark:- ark,t:${target_folder}/gpost.JOB || exit 1;
-
-      echo "echo3: covert the gpost to gaussian-id"
+      echo "step3: covert the gpost to gaussian-id"
       #cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
       cat ${target_folder}/gpost.* > ${target_folder}/mono_${test}_decode_gpost
       # call the convert_gpost_to_gaussid.py to convert the gpost to gaussid
       python convert_gpost_pid.py ${target_folder}/../final.mdl.txt ${target_folder}/mono_${test}_decode_gpost ${target_folder}/mono_${test}_decode_gaussid
-
+      ) &
   done
 fi
 
