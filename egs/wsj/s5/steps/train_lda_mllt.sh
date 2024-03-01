@@ -35,6 +35,7 @@ context_opts=   # use "--context-width=5 --central-position=2" for quinphone.
 # End configuration.
 train_tree=true  # if false, don't actually train the tree.
 use_lda_mat=  # If supplied, use this LDA[+MLLT] matrix.
+pdf_class_list=1
 
 echo "$0 $@"  # Print the command line for logging
 
@@ -133,7 +134,7 @@ fi
 if [ $stage -le -3 ] && $train_tree; then
   echo "$0: Getting questions for tree clustering."
   # preparing questions, roots file...
-  cluster-phones $context_opts $dir/treeacc $lang/phones/sets.int \
+  cluster-phones --pdf-class-list=${pdf_class_list} $context_opts $dir/treeacc $lang/phones/sets.int \
     $dir/questions.int 2> $dir/log/questions.log || exit 1;
   cat $lang/phones/extra_questions.int >> $dir/questions.int
   compile-questions $context_opts $lang/topo $dir/questions.int \

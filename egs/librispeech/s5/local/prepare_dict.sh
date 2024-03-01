@@ -28,12 +28,14 @@ lm_dir=$1
 g2p_model_dir=$2
 dst_dir=$3
 
-vocab=$lm_dir/librispeech-vocab.txt
+#vocab=$lm_dir/librispeech-vocab.txt
+vocab=$lm_dir/challenge-vocab.txt
 [ ! -f $vocab ] && echo "$0: vocabulary file not found at $vocab" && exit 1;
 
 # this file is either a copy of the lexicon we download from openslr.org/11 or is
 # created by the G2P steps below
-lexicon_raw_nosil=$dst_dir/lexicon_raw_nosil.txt
+#lexicon_raw_nosil=$dst_dir/lexicon_raw_nosil.txt
+lexicon_raw_nosil=$dst_dir/challenge-lexicon_raw_nosil.txt
 
 cmudict_dir=$dst_dir/cmudict
 cmudict_plain=$dst_dir/cmudict.0.7a.plain

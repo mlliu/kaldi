@@ -10,14 +10,14 @@ data=/export/a15/vpanayotov/data
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=10 # start from stage 6
-stop_stage=10
-skip_stages= #"7 8 9"
+stage=8 # start from stage 6
+stop_stage=11
+skip_stages="7 9 10"
 skip_train=false # if true, skip the training stages, just run the decoding stages, which is stage 13
 
-feat_type=lda80_wavlm  #lda80_wavlm #wavlm
+feat_type=wav2vec2  #wavlm  #lda80_wavlm #wavlm
 datadir=data/${feat_type} # to store the scp file
-expdir=exp/${feat_type}_1000beam_nodelta_trans_monostate_monophone # to store the experiment
+expdir=exp/${feat_type}_1000beam_nodelta_trans_monostate_monophone #_nocmvn # to store the experiment
 featdir=feat/${feat_type} # to store the feature itself
 langdir=data/lang_nosp_monostate # the language model folder, contains phones.txt, words.txt, topo, L.fst, etc.
 n_beam=100
@@ -109,53 +109,17 @@ fi
 
 
 if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ] && ! [[ " ${skip_stages} " =~ [[:space:]]6[[:space:]] ]]; then
-  #for part in dev_clean test_clean dev_other test_other train_clean_100; do
-  for part in train_clean_100_sp1.1; do
+  for part in dev_clean test_clean dev_other test_other train_clean_100 train test_1h; do
     #steps/make_mfcc.sh --cmd "$train_cmd" --nj 40 data/$part exp/make_mfcc/$part $mfccdir
     #utils/copy_data_dir.sh --validate_opts --non-print "data/${part}" "${datadir}/${part}"
 
-    wavlmdir="/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21"
-
+    #wavlmdir="/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21"
+    wavlmdir="/export/fs05/mliu121/espnet_data/challenge/dump/extracted/xls_r_1b/layer35"
     # first sort the wavlmdir
     utils/fix_data_dir.sh "${wavlmdir}/${part}"
 
     utils/copy_data_dir.sh --validate_opts --non-print "$wavlmdir/${part}" "${datadir}/${part}"
-    # copy feat_pca80.scp to feat_pca80_wavlm.scp from the source directory to the target directory
-    # and add the lbi before each line
-#    echo "copy the wav.scp"
-#    source=$wavlmdir/${part}/wav.scp #feat_pca80.scp
-#    #cp ${source} ${datadir}/${part}/feats.scp
-#    target=${datadir}/${part}/wav.scp
-#    # add the lbi on each line of the feats.scp
-#    if [ -f ${target} ]; then
-#      rm ${target}
-#    fi
-#    while IFS= read -r line; do
-#      echo "lbi-${line}" >> ${target}
-#    done < ${source}
-#
-#    echo "copy the feat"
-#    source=$wavlmdir/${part}/feats.scp #feat_pca80.scp
-#    #cp ${source} ${datadir}/${part}/feats.scp
-#    target=${datadir}/${part}/feats.scp
-#    # add the lbi on each line of the feats.scp
-#    if [ -f ${target} ]; then
-#      rm ${target}
-#    fi
-#    while IFS= read -r line; do
-#      echo "lbi-${line}" >> ${target}
-#    done < ${source}
-#
-#   echo "copy the utt2num_frames"
-#    # copy the utt2num_frames from the source directory to the target directory
-#    source=$wavlmdir/${part}/utt2num_frames
-#    target=${datadir}/${part}/utt2num_frames
-#    if [ -f ${target} ]; then
-#      rm ${target}
-#    fi
-#    while IFS= read -r line; do
-#      echo "lbi-${line}" >> ${target}
-#    done < ${source}
+
 
     # rewrite the frame_shift file is 0.02
     if [ -f ${datadir}/${part}/frame_shift ]; then
@@ -166,6 +130,15 @@ if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ] && ! [[ " ${skip_stages} " =~ [
     # if fake, then no cmvn is applied
     echo "calculate the cmvn stats"
     steps/compute_cmvn_stats.sh ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
+     # using fake cmvn stats
+    if [ -f ${datadir}/${part}/cmvn.scp ]; then
+      # rename the cmvn.scp to cmvn.scp.bak
+      mv ${datadir}/${part}/cmvn.scp ${datadir}/${part}/cmvn.scp.bak
+    fi
+    # recomputing the fake cmvn stats
+    steps/compute_cmvn_stats.sh --fake ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
+    # delete the split folder
+    rm -rf ${datadir}/${part}/split*
   done
 fi
 
@@ -188,11 +161,12 @@ if [ ${stage} -le 8 ] && [ ${stop_stage} -ge 8 ] && ! [[ " ${skip_stages} " =~ [
 #  steps/train_mono.sh --boost-silence 1.25 --nj 20 --cmd "$train_cmd" \
 #                      data/train_2kshort data/lang_nosp exp/mono
 # we use train_mono_nodelta.sh instead of train_mono.sh, because we don't need delta features for the wavlm
-   steps/train_mono_nodelta.sh --boost-silence 1.25 --nj 20 --cmd "$train_cmd" \
+   steps/train_mono_nodelta.sh --boost-silence 1.25 --nj 10 --cmd "$train_cmd" \
+                 --stage 19 \
 	               --initial_beam 10 --regular_beam ${n_beam} --retry_beam ${n_retry_beam} \
 	               --num_iters 40  --totgauss 2000 \
 	               ${datadir}/train_clean_100 ${langdir} ${expdir}/mono
-#                       ${datadir}/train_2kshort ${langdir} ${expdir}/mono
+
 fi
 if [ ${stage} -le 9 ] && [ ${stop_stage} -ge 9 ] && ! [[ " ${skip_stages} " =~ [[:space:]]9[[:space:]] ]]; then
   # get the alignments for the monophone system
@@ -224,20 +198,8 @@ for test in ${_dsets}; do
   #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
       (
       echo "step 1: decode the ${test} set,generate the lattice "
-      #if [ ${test} == "train_clean_100" ]; then
-      #  _nj=20
-      #  skip_scoring=true
-      #else
-      #  _nj=10
-      #  skip_scoring=false
-      #fi
       skip_scoring=true
       _nj=20
-#      target_folder=${expdir}/mono/decode_phonelm_${test}
-#      steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
-#                            --skip_scoring $skip_scoring \
-#                            ${graphdir} ${datadir}/${test} \
-#                            ${target_folder}
 
       # no delta features and no transform-feats
       acwt=0.083333 # Acoustic weight used in getting fMLLR transforms, and also in lattice generation.
@@ -252,20 +214,6 @@ for test in ${_dsets}; do
                             ${graphdir} ${datadir}/${test} \
                             ${target_folder} || exit 1;
       echo "step 2: generate the 1-bet path through lattices, and convert it to gaussian-level posterior"
-
-#      for i in $(seq 1 ${_nj}); do
-#         lattice-best-path "ark,t:gunzip -c $target_folder/lat.$i.gz|" \
-#              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.$i" \
-#              "ark:|gzip -c >$target_folder/ali.$i.gz" 2>/dev/null || exit 1;
-#      done
-#
-#      echo "step 3: extract pdf-id"
-#      for i in ${target_folder}/ali.*.gz;
-#      do ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
-#              "ark,t:gunzip -c $i|" ark,t:${i%.gz}.pdf;
-#      done
-      # combine the lattice-best-path and ali-to-pdf with a pipe, so the output of the first command is the input of the second command
-      # and we don't need to store the intermediate result $target_folder/ali.$i.gz"
 
       #combine the lattice-best-path and ali-to-post, gmm-post-to-gpost with a pipe, so the output of the first command is the input of the second command
       sdata=${datadir}/${test}/split${_nj}
@@ -283,6 +231,52 @@ for test in ${_dsets}; do
       # call the convert_gpost_to_gaussid.py to convert the gpost to gaussid
       python convert_gpost_pid.py ${target_folder}/../final.mdl.txt ${target_folder}/mono_${test}_decode_gpost ${target_folder}/mono_${test}_decode_gaussid
       ) &
+  done
+fi
+
+if [ ${stage} -le 11 ] && [ ${stop_stage} -ge 11 ] && ! [[ " ${skip_stages} " =~ [[:space:]]11[[:space:]] ]]; then
+  echo "decoding with the tgmed lm and then rescore with the large 4-gram model"
+  decoding_lm="tgmed"
+
+    langdir_tgmed=data/lang_nosp_test_tgmed_monostate
+    graphdir=${expdir}/mono/graph_${decoding_lm}
+#    utils/mkgraph.sh ${langdir_tgmed} \
+#                     ${expdir}/mono ${graphdir}
+#
+    _dsets="${test_sets}"
+
+  for test in ${_dsets}; do
+  #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
+      echo "step 1: decode the ${test} set,generate the lattice "
+      skip_scoring=false
+      _nj=20
+#      target_folder=${expdir}/mono/decode_tgmed_${test}
+#      steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+#                            --skip_scoring $skip_scoring \
+#                            ${graphdir} ${datadir}/${test} \
+#                            ${target_folder}
+
+      # no delta features and no transform-feats
+      acwt=0.083333 # Acoustic weight used in getting fMLLR transforms, and also in lattice generation.
+#     # may be change the number of beam and the number of max-active to achieve more accurate decoding
+      target_folder=${expdir}/mono/decode_tgmed_${test}
+      model=${expdir}/mono/final.mdl
+      steps/decode_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+                            --skip_scoring $skip_scoring \
+                            --acwt $acwt --beam 16 \
+                            --max-active 7000 \
+                            --model ${model} \
+                            ${graphdir} ${datadir}/${test} \
+                            ${target_folder} || exit 1;
+
+      echo "step 2: rescore the lattice with the large 4-gram model"
+      steps/lmrescore_const_arpa.sh \
+        --cmd "$decode_cmd" data/lang_nosp_test_{tgmed,tglarge}_monostate \
+        ${datadir}/${test} ${expdir}/mono/decode_{tgmed,tglarge}_${test}
+
+      steps/lmrescore_const_arpa.sh \
+        --cmd "$decode_cmd" data/lang_nosp_test_{tgmed,fglarge}_monostate \
+        ${datadir}/${test} ${expdir}/mono/decode_{tgmed,fglarge}_${test}
   done
 fi
 

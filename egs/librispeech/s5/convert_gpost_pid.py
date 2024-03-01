@@ -42,8 +42,8 @@ def write_gpost_pid(gpost, gpost_pid,num_pdfs, num_mixtures):
     with open(gpost, 'r') as f_gpost, open(gpost_pid, 'w') as f_gpost_pid:
         line=f_gpost.readline()
         while line:
-            assert line.startswith("lbi-")
-            if line.startswith("lbi-"):
+            assert line.startswith("lbi-") or line.startswith("sp") or line.startswith("sw") or line.startswith("en")
+            if line.startswith("lbi-") or line.startswith("sp") or line.startswith("sw") or line.startswith("en"):
                 #print("line: ", line)
                 # this means we have a new utterance
                 utt_id = line.strip().split()[0]

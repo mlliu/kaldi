@@ -10,12 +10,12 @@ data=/export/a15/vpanayotov/data
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=12 # start from stage 6
-stop_stage=13
+stage=15 # start from stage 6
+stop_stage=15
 skip_stages=
-feat_type=wavlm #lda80_wavlm #wavlm
+feat_type=pca80_wavlm #lda80_wavlm #wavlm
 datadir=data/${feat_type} # to store the scp file
-expdir=exp/${feat_type}_1000beam_nodelta_trans # to store the experiment
+expdir=exp/${feat_type} #_1000beam_nodelta_trans # to store the experiment
 featdir=feat/${feat_type} # to store the feature itself
 
 n_beam=100
@@ -331,6 +331,39 @@ if [ ${stage} -le 14 ] && [ ${stop_stage} -ge 14 ] && ! [[ " ${skip_stages} " =~
     cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_align_pdf_alignment
 
 
+  done
+fi
+
+if [ ${stage} -le 15 ] && [ ${stop_stage} -ge 15 ] && ! [[ " ${skip_stages} " =~ [[:space:]]15[[:space:]] ]]; then
+  echo "decoding with the tgmed lm and then rescore with the large 4-gram model"
+  decoding_lm="tgmed"
+
+    langdir_tgmed=data/lang_nosp_test_tgmed
+    graphdir=${expdir}/tri4b/graph_tgmed
+    utils/mkgraph.sh ${langdir_tgmed} \
+                     ${expdir}/tri4b ${graphdir}
+
+    _dsets="test_clean test_other dev_clean dev_other"
+
+  for test in ${_dsets}; do
+  #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
+      echo "step 1: decode the ${test} set,generate the lattice "
+      skip_scoring=false
+      _nj=20
+      target_folder=${expdir}/tri4b/decode_tgmed_${test}
+      steps/decode_fmllr.sh --nj ${_nj} --cmd "$decode_cmd" \
+                            --skip_scoring $skip_scoring \
+                            ${graphdir} ${datadir}/${test} \
+                            ${target_folder}
+
+      echo "step 2: rescore the lattice with the large 4-gram model"
+      steps/lmrescore_const_arpa.sh \
+        --cmd "$decode_cmd" data/lang_nosp_test_{tgmed,tglarge} \
+        ${datadir}/${test} ${expdir}/tri4b/decode_{tgmed,tglarge}_${test}
+
+      steps/lmrescore_const_arpa.sh \
+        --cmd "$decode_cmd" data/lang_nosp_test_{tgsmall,fglarge} \
+        ${datadir}/${test} ${expdir}/tri4b/decode_{tgmed,fglarge}_${test}
   done
 fi
 

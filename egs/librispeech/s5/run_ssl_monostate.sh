@@ -10,12 +10,12 @@ data=/export/a15/vpanayotov/data
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=8 # start from stage 6
-stop_stage=13
+stage=15 # start from stage 6
+stop_stage=15
 skip_stages=
 skip_train=true # if true, skip the training stages, just run the decoding stages, which is stage 13
 
-feat_type=lda80_wavlm  #lda80_wavlm #wavlm
+feat_type=wavlm  #lda80_wavlm #wavlm
 datadir=data/${feat_type} # to store the scp file
 expdir=exp/${feat_type}_1000beam_nodelta_trans_monostate # to store the experiment
 featdir=feat/${feat_type} # to store the feature itself
@@ -26,7 +26,7 @@ n_retry_beam=1000
 # setup the train, dev and test set
 train_set= #"train_clean_100"
 #train_dev="dev"
-test_sets="eval2000" #"test_clean test_other dev_clean dev_other"
+test_sets="test_clean test_other dev_clean dev_other"
 
 
 . ./cmd.sh
@@ -270,16 +270,18 @@ fi
 
 if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~ [[:space:]]13[[:space:]] ]]; then
   echo "build the unigram uniform phone-level language model"
-  # build the bigram phone-level Lamguage model
-  phone_lang=data/phone_lang_monostate
-  #lang=data/lang_nosp replace by the ${langdir}
-  alidir=exp/tri4b_${num_leaves}/align_train_clean_100
-  #utils/lang/make_phone_bigram_lang.sh ${langdir} $alidir $phone_lang
 
-  # decode using the tri4b model and generate the decoding alignment
-  graphdir=${expdir}/tri4b_${num_leaves}/graph_phone_bg
-  utils/mkgraph.sh $phone_lang \
-                   ${expdir}/tri4b_${num_leaves} ${graphdir}
+    # build the bigram phone-level Lamguage model
+    phone_lang=data/phone_lang_monostate
+    #lang=data/lang_nosp replace by the ${langdir}
+    alidir=exp/tri4b_${num_leaves}/align_train_clean_100
+    #utils/lang/make_phone_bigram_lang.sh ${langdir} $alidir $phone_lang
+
+    # decode using the tri4b model and generate the decoding alignment
+    graphdir=${expdir}/tri4b_${num_leaves}/graph_phone_bg
+    utils/mkgraph.sh $phone_lang \
+                     ${expdir}/tri4b_${num_leaves} ${graphdir}
+
   if "${skip_train}"; then
     _dsets="${test_sets}"
   else
@@ -360,28 +362,114 @@ if [ ${stage} -le 14 ] && [ ${stop_stage} -ge 14 ] && ! [[ " ${skip_stages} " =~
   done
 fi
 
-<<COMMENT
+if [ ${stage} -le 15 ] && [ ${stop_stage} -ge 15 ] && ! [[ " ${skip_stages} " =~ [[:space:]]15[[:space:]] ]]; then
+  echo "decoding with the tgmed lm and then rescore with the large 4-gram model"
+  decoding_lm="tgmed"
 
-if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~ [[:space:]]13[[:space:]] ]]; then
+    langdir_tgmed=data/lang_nosp_test_tgmed_monostate
+    graphdir=${expdir}/tri4b_${num_leaves}/graph_${decoding_lm}
+    utils/mkgraph.sh ${langdir_tgmed} \
+                     ${expdir}/tri4b_${num_leaves} ${graphdir}
+
+    _dsets="${test_sets}"
+
+  for test in dev_other test_clean test_other train_clean_100; do  #in ${_dsets}; do
+  #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
+      echo "step 1: decode the ${test} set,generate the lattice "
+      skip_scoring=true
+      _nj=20
+      target_folder=${expdir}/tri4b_${num_leaves}/decode_tgmed_${test}
+#      steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+#                            --skip_scoring $skip_scoring \
+#                            ${graphdir} ${datadir}/${test} \
+#                            ${target_folder}
+#
+#      echo "step 2: rescore the lattice with the large 4-gram model"
+#      steps/lmrescore_const_arpa.sh \
+#        --cmd "$decode_cmd" data/lang_nosp_test_{tgmed,tglarge}_monostate \
+#        ${datadir}/${test} ${expdir}/tri4b_${num_leaves}/decode_{tgmed,tglarge}_${test}
+#
+#      steps/lmrescore_const_arpa.sh \
+#        --cmd "$decode_cmd" data/lang_nosp_test_{tgmed,fglarge}_monostate \
+#        ${datadir}/${test} ${expdir}/tri4b_${num_leaves}/decode_{tgmed,fglarge}_${test}
+
+      echo "step 3: generate the 1-bet path through lattices"
+
+      # combine the lattice-best-path and ali-to-pdf with a pipe, so the output of the first command is the input of the second command
+      # and we don't need to store the intermediate result $target_folder/ali.$i.gz"
+      $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
+         lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
+              "ark,t:|int2sym.pl -f 2- $langdir_tgmed/words.txt > $target_folder/text.JOB" ark:- \| \
+              ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
+              ark:- ark,t:${target_folder}/ali.JOB.pdf || exit 1;
+
+
+      cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
+  done
+fi
+
+
+
+
+if [ ${stage} -le 16 ] && [ ${stop_stage} -ge 16 ] && ! [[ " ${skip_stages} " =~ [[:space:]]16[[:space:]] ]]; then
   # Now we compute the pronunciation and silence probabilities from training data,
   # and re-create the lang directory.
   steps/get_prons.sh --cmd "$train_cmd" \
-                     data/train_clean_100 data/lang_nosp exp/tri4b
+                     ${datadir}/train_clean_100 ${langdir} ${expdir}/tri4b_${num_leaves}
+  # if the path ${expdir}/local/dict is not exist, then create it
+  if [ ! -d ${expdir}/data/local ]; then
+    mkdir -p ${expdir}/data/local
+  fi
   utils/dict_dir_add_pronprobs.sh --max-normalize true \
                                   data/local/dict_nosp \
-                                  exp/tri4b/pron_counts_nowb.txt exp/tri4b/sil_counts_nowb.txt \
-                                  exp/tri4b/pron_bigram_counts_nowb.txt data/local/dict
+                                  ${expdir}/tri4b_${num_leaves}/pron_counts_nowb.txt ${expdir}/tri4b_${num_leaves}/sil_counts_nowb.txt \
+                                  ${expdir}/tri4b_${num_leaves}/pron_bigram_counts_nowb.txt ${expdir}/data/local/dict #data/local/dict
 
-  utils/prepare_lang.sh data/local/dict \
-                        "<UNK>" data/local/lang_tmp data/lang
-  local/format_lms.sh --src-dir data/lang data/local/lm
+  utils/prepare_lang.sh ${expdir}/data/local/dict \
+                        "<UNK>" ${expdir}/data/local/lang_tmp ${expdir}/data/lang
+  local/format_lms.sh --src-dir ${expdir}/data/lang data/local/lm
 
   utils/build_const_arpa_lm.sh \
-    data/local/lm/lm_tglarge.arpa.gz data/lang data/lang_test_tglarge
+    data/local/lm/lm_tglarge.arpa.gz ${expdir}/data/lang ${expdir}/data/lang_test_tglarge
   utils/build_const_arpa_lm.sh \
-    data/local/lm/lm_fglarge.arpa.gz data/lang data/lang_test_fglarge
+    data/local/lm/lm_fglarge.arpa.gz ${expdir}/data/lang ${expdir}/data/lang_test_fglarge
 fi
 
+if [ ${stage} -le 17 ] && [ ${stop_stage} -ge 17 ] && ! [[ " ${skip_stages} " =~ [[:space:]]17[[:space:]] ]]; then
+  echo "decoding with the re-created language model with silence and pronunciation probabilities"
+  decoding_lm="tgmed_sp"
+
+    langdir_tgmed=${expdir}/data/lang_test_tgmed_monostate
+    graphdir=${expdir}/tri4b_${num_leaves}/graph_${decoding_lm}
+    utils/mkgraph.sh ${langdir_tgmed} \
+                     ${expdir}/tri4b_${num_leaves} ${graphdir}
+
+    _dsets="${test_sets}"
+
+  for test in "test_clean"; do  #in ${_dsets}; do
+  #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
+#      echo "step 1: decode the ${test} set,generate the lattice "
+#      skip_scoring=false
+#      _nj=20
+#      target_folder=${expdir}/tri4b_${num_leaves}/decode_${decoding_lm}_${test}
+#      steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+#                            --skip_scoring $skip_scoring \
+#                            ${graphdir} ${datadir}/${test} \
+#                            ${target_folder}
+#
+#      echo "step 2: rescore the lattice with the large 4-gram model"
+#      steps/lmrescore_const_arpa.sh \
+#        --cmd "$decode_cmd" ${expdir}/data/lang_test_{tgmed,tglarge}_monostate \
+#        ${datadir}/${test} ${expdir}/tri4b_${num_leaves}/decode_{${decoding_lm},tglarge_sp}_${test}
+
+      steps/lmrescore_const_arpa.sh \
+        --cmd "$decode_cmd" ${expdir}/data/lang_test_{tgmed,fglarge}_monostate \
+        ${datadir}/${test} ${expdir}/tri4b_${num_leaves}/decode_{${decoding_lm},fglarge_sp}_${test}
+  done
+fi
+
+
+<<COMMENT
 if [ ${stage} -le 14 ] && [ ${stop_stage} -ge 14 ] && ! [[ " ${skip_stages} " =~ [[:space:]]14[[:space:]] ]]; then
   # This stage is for nnet2 training on 100 hours; we're commenting it out
   # as it's deprecated.
@@ -392,6 +480,7 @@ if [ ${stage} -le 14 ] && [ ${stop_stage} -ge 14 ] && ! [[ " ${skip_stages} " =~
   # This nnet2 training script is deprecated.
   local/nnet2/run_5a_clean_100.sh
 fi
+
 
 if [ $stage -le 15 ] && [ ${stop_stage} -ge 15 ] && ! [[ " ${skip_stages} " =~ [[:space:]]15[[:space:]] ]]; then
   local/download_and_untar.sh $data $data_url train-clean-360
