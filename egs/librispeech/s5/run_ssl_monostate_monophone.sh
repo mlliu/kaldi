@@ -10,12 +10,12 @@ data=/export/a15/vpanayotov/data
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=8 # start from stage 6
-stop_stage=11
-skip_stages="7 9 10"
+stage=10 # start from stage 6
+stop_stage=10
+skip_stages="7 9"
 skip_train=false # if true, skip the training stages, just run the decoding stages, which is stage 13
 
-feat_type=wav2vec2  #wavlm  #lda80_wavlm #wavlm
+feat_type=wavlm  #wavlm  #lda80_wavlm #wavlm
 datadir=data/${feat_type} # to store the scp file
 expdir=exp/${feat_type}_1000beam_nodelta_trans_monostate_monophone #_nocmvn # to store the experiment
 featdir=feat/${feat_type} # to store the feature itself
@@ -206,30 +206,39 @@ for test in ${_dsets}; do
 #     # may be change the number of beam and the number of max-active to achieve more accurate decoding
       target_folder=${expdir}/mono/decode_phonelm_${test}
       model=${expdir}/mono/final.mdl
-      steps/decode_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
-                            --skip_scoring $skip_scoring \
-                            --acwt $acwt --beam 16 \
-                            --max-active 7000 \
-                            --model ${model} \
-                            ${graphdir} ${datadir}/${test} \
-                            ${target_folder} || exit 1;
+#      steps/decode_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+#                            --skip_scoring $skip_scoring \
+#                            --acwt $acwt --beam 16 \
+#                            --max-active 7000 \
+#                            --model ${model} \
+#                            ${graphdir} ${datadir}/${test} \
+#                            ${target_folder} || exit 1;
       echo "step 2: generate the 1-bet path through lattices, and convert it to gaussian-level posterior"
 
-      #combine the lattice-best-path and ali-to-post, gmm-post-to-gpost with a pipe, so the output of the first command is the input of the second command
-      sdata=${datadir}/${test}/split${_nj}
-      cmvn_opts=`cat ${expdir}/mono/cmvn_opts 2>/dev/null`
-      feats="ark,s,cs:apply-cmvn --norm-vars=false --utt2spk=ark:${sdata}/JOB/utt2spk scp:${sdata}/JOB/cmvn.scp scp:${sdata}/JOB/feats.scp ark:- |"
+#      #combine the lattice-best-path and ali-to-post, gmm-post-to-gpost with a pipe, so the output of the first command is the input of the second command
+#      sdata=${datadir}/${test}/split${_nj}
+#      cmvn_opts=`cat ${expdir}/mono/cmvn_opts 2>/dev/null`
+#      feats="ark,s,cs:apply-cmvn --norm-vars=false --utt2spk=ark:${sdata}/JOB/utt2spk scp:${sdata}/JOB/cmvn.scp scp:${sdata}/JOB/feats.scp ark:- |"
+#
+#      $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
+#         lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
+#              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
+#              ali-to-post ark:- ark:- \| \
+#              gmm-post-to-gpost $model "$feats" ark:- ark,t:${target_folder}/gpost.JOB || exit 1;
+#      echo "step3: covert the gpost to gaussian-id"
+#      #cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
+#      cat ${target_folder}/gpost.* > ${target_folder}/mono_${test}_decode_gpost
+#      # call the convert_gpost_to_gaussid.py to convert the gpost to gaussid
+#      python convert_gpost_pid.py ${target_folder}/../final.mdl.txt ${target_folder}/mono_${test}_decode_gpost ${target_folder}/mono_${test}_decode_gaussid
 
-      $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
+      echo "step 4: generte the phone-id alignment"
+            $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
          lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
               "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
-              ali-to-post ark:- ark:- \| \
-              gmm-post-to-gpost $model "$feats" ark:- ark,t:${target_folder}/gpost.JOB || exit 1;
-      echo "step3: covert the gpost to gaussian-id"
-      #cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
-      cat ${target_folder}/gpost.* > ${target_folder}/mono_${test}_decode_gpost
-      # call the convert_gpost_to_gaussid.py to convert the gpost to gaussid
-      python convert_gpost_pid.py ${target_folder}/../final.mdl.txt ${target_folder}/mono_${test}_decode_gpost ${target_folder}/mono_${test}_decode_gaussid
+              ali-to-phones --per-frame ${expdir}/mono/final.mdl \
+              ark:- ark,t:${target_folder}/ali_phones.JOB.pdf || exit 1;
+
+      cat ${target_folder}/ali_phones*.pdf > ${target_folder}/mono_${test}_decode_phones_alignment
       ) &
   done
 fi

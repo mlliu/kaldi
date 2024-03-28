@@ -10,10 +10,10 @@ data=/export/a15/vpanayotov/data
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=15 # start from stage 6
-stop_stage=15
+stage=13 # start from stage 6
+stop_stage=13
 skip_stages=
-skip_train=true # if true, skip the training stages, just run the decoding stages, which is stage 13
+skip_train=false # if true, skip the training stages, just run the decoding stages, which is stage 13
 
 feat_type=wavlm  #lda80_wavlm #wavlm
 datadir=data/${feat_type} # to store the scp file
@@ -24,7 +24,7 @@ n_beam=100
 n_retry_beam=1000
 
 # setup the train, dev and test set
-train_set= #"train_clean_100"
+train_set="train_clean_100"
 #train_dev="dev"
 test_sets="test_clean test_other dev_clean dev_other"
 
@@ -288,7 +288,6 @@ if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~
     _dsets="${train_set} ${test_sets}"
   fi
   for test in ${_dsets}; do
-  #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
       echo "step 1: decode the ${test} set,generate the lattice "
       #if [ ${test} == "train_clean_100" ]; then
       #  _nj=20
@@ -300,45 +299,55 @@ if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~
       skip_scoring=true
       _nj=20
       target_folder=${expdir}/tri4b_${num_leaves}/decode_uniphonelm_${test}
-      steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
-                            --skip_scoring $skip_scoring \
-                            ${graphdir} ${datadir}/${test} \
-                            ${target_folder}
-
-      # no delta features and no transform-feats
-#      acwt=0.083333 # Acoustic weight used in getting fMLLR transforms, and also in lattice generation.
-#      # may be change the number of beam and the number of max-active to achieve more accurate decoding
-#      alignment_model=${expdir}/tri3b_${num_leaves}/final.mdl
-#      steps/decode_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
+#      steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
 #                            --skip_scoring $skip_scoring \
-#                            --acwt $acwt --beam 16 \
-#                            --model $alignment_model \
-#                            --max-active 7000 \
 #                            ${graphdir} ${datadir}/${test} \
-#                            ${target_folder} || exit 1;
-      echo "step 2: generate the 1-bet path through lattices"
+#                            ${target_folder}
 
-#      for i in $(seq 1 ${_nj}); do
-#         lattice-best-path "ark,t:gunzip -c $target_folder/lat.$i.gz|" \
-#              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.$i" \
-#              "ark:|gzip -c >$target_folder/ali.$i.gz" 2>/dev/null || exit 1;
-#      done
-#
-#      echo "step 3: extract pdf-id"
-#      for i in ${target_folder}/ali.*.gz;
-#      do ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
-#              "ark,t:gunzip -c $i|" ark,t:${i%.gz}.pdf;
-#      done
+      echo "step 2: generate the 1-bet path through lattices, and genrate the pdf-id"
+
       # combine the lattice-best-path and ali-to-pdf with a pipe, so the output of the first command is the input of the second command
       # and we don't need to store the intermediate result $target_folder/ali.$i.gz"
+#      $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
+#         lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
+#              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
+#              ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
+#              ark:- ark,t:${target_folder}/ali.JOB.pdf || exit 1;
+#
+#      cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
+
+      echo "step 3: generate phone id from the decoding alignment"
       $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
          lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
               "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
-              ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
-              ark:- ark,t:${target_folder}/ali.JOB.pdf || exit 1;
+              ali-to-phones --per-frame ${expdir}/tri4b_${num_leaves}/final.mdl \
+              ark:- ark,t:${target_folder}/ali_phones.JOB.pdf || exit 1;
 
+      cat ${target_folder}/ali_phones*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_phones_alignment
 
-      cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
+#    echo "step 4: generate the component id from the decoding alignment"
+#          #combine the lattice-best-path and ali-to-post, gmm-post-to-gpost with a pipe, so the output of the first command is the input of the second command
+#      model=${expdir}/tri4b_${num_leaves}/final.mdl
+#      sdata=${datadir}/${test}/split${_nj}
+#      cmvn_opts=`cat ${expdir}/tri4b_${num_leaves}/cmvn_opts 2>/dev/null`
+#      splice_opts=`cat ${expdir}/tri4b_${num_leaves}/splice_opts 2>/dev/null`
+#      #feats="ark,s,cs:apply-cmvn --norm-vars=false --utt2spk=ark:${sdata}/JOB/utt2spk scp:${sdata}/JOB/cmvn.scp scp:${sdata}/JOB/feats.scp ark:- |"
+#      # first si feature with lda transformation, then
+#      sifeats="ark,s,cs:apply-cmvn $cmvn_opts --utt2spk=ark:$sdata/JOB/utt2spk scp:$sdata/JOB/cmvn.scp scp:$sdata/JOB/feats.scp ark:- | splice-feats $splice_opts ark:- ark:- | transform-feats ${expdir}/tri4b_${num_leaves}/final.mat ark:- ark:- |"
+#      # then lda feature with fmllr transformation
+#      feats="$sifeats transform-feats --utt2spk=ark:$sdata/JOB/utt2spk ark:$target_folder/trans.JOB ark:- ark:- |"
+#
+#      $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
+#         lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
+#              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
+#              ali-to-post ark:- ark:- \| \
+#              gmm-post-to-gpost $model "$feats" ark:- ark,t:${target_folder}/gpost.JOB || exit 1;
+#      #echo "step3: covert the gpost to gaussian-id"
+#      #cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
+#      cat ${target_folder}/gpost.* > ${target_folder}/tri4b_${num_leaves}_${test}_decode_gpost
+#      # call the convert_gpost_to_gaussid.py to convert the gpost to gaussid
+#      python convert_gpost_pid.py ${target_folder}/../final.mdl ${target_folder}/tri4b_${num_leaves}_${test}_decode_gpost ${target_folder}/tri4b_${num_leaves}_${test}_decode_gaussid
+
   done
 fi
 

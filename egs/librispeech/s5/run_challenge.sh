@@ -10,8 +10,8 @@ data=/export/a15/vpanayotov/data
 data_url=www.openslr.org/resources/12
 lm_url=www.openslr.org/resources/11
 mfccdir=mfcc
-stage=10 # start from stage 6
-stop_stage=11
+stage=13 # start from stage 6
+stop_stage=13
 skip_stages="4 5"
 skip_train=false # if true, skip the training stages, just run the decoding stages, which is stage 13
 
@@ -25,7 +25,7 @@ n_retry_beam=1000
 
 # setup the train, dev and test set
 train_set="train"
-#train_dev="dev"
+train_dev="dev"
 test_sets="test_clean test_other dev_clean dev_other test_1h"
 
 
@@ -109,42 +109,39 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ] && ! [[ " ${skip_stages} " =~ [
 fi
 
 
-if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ] && ! [[ " ${skip_stages} " =~ [[:space:]]6[[:space:]] ]]; then
-  for part in dev_clean test_clean dev_other test_other train_clean_100; do
-    if false; then
-    #steps/make_mfcc.sh --cmd "$train_cmd" --nj 40 data/$part exp/make_mfcc/$part $mfccdir
-    utils/copy_data_dir.sh --validate_opts --non-print "data/${part}" "${datadir}/${part}"
-    # copy feat_pca80.scp to feat_pca80_wavlm.scp from the source directory to the target directory
-    # and add the lbi before each line
-    source=/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21/${part}/feat_pca80.scp
-    #cp ${source} ${datadir}/${part}/feats.scp
-    target=${datadir}/${part}/feats.scp
-    # add the lbi on each line of the feats.scp
-    if [ -f ${target} ]; then
-      rm ${target}
-    fi
-    while IFS= read -r line; do
-      echo "lbi-${line}" >> ${target}
-    done < ${source}
 
-    # copy the utt2num_frames from the source directory to the target directory
-    source=/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21/${part}/utt2num_frames
-    target=${datadir}/${part}/utt2num_frames
-    if [ -f ${target} ]; then
-      rm ${target}
-    fi
-    while IFS= read -r line; do
-      echo "lbi-${line}" >> ${target}
-    done < ${source}
+if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ] && ! [[ " ${skip_stages} " =~ [[:space:]]6[[:space:]] ]]; then
+  #for part in dev_clean test_clean dev_other test_other train_clean_100 train test_1h; do
+  for part in dev; do
+    #steps/make_mfcc.sh --cmd "$train_cmd" --nj 40 data/$part exp/make_mfcc/$part $mfccdir
+    #utils/copy_data_dir.sh --validate_opts --non-print "data/${part}" "${datadir}/${part}"
+
+    #wavlmdir="/export/fs05/mliu121/espnet_data/librispeech_100_asr2/dump/extracted/wavlm_large/layer21"
+    wavlmdir="/export/fs05/mliu121/espnet_data/challenge/dump/extracted/xls_r_1b/layer35"
+    # first sort the wavlmdir
+    utils/fix_data_dir.sh "${wavlmdir}/${part}"
+
+    utils/copy_data_dir.sh --validate_opts --non-print "$wavlmdir/${part}" "${datadir}/${part}"
+
 
     # rewrite the frame_shift file is 0.02
     if [ -f ${datadir}/${part}/frame_shift ]; then
       rm ${datadir}/${part}/frame_shift
     fi
     echo "0.02" >> ${datadir}/${part}/frame_shift
-    fi
+
     # if fake, then no cmvn is applied
+    echo "calculate the cmvn stats"
+    steps/compute_cmvn_stats.sh ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
+     # using fake cmvn stats
+    if [ -f ${datadir}/${part}/cmvn.scp ]; then
+      # rename the cmvn.scp to cmvn.scp.bak
+      mv ${datadir}/${part}/cmvn.scp ${datadir}/${part}/cmvn.scp.bak
+    fi
+    # recomputing the fake cmvn stats
     steps/compute_cmvn_stats.sh --fake ${datadir}/${part} ${expdir}/make_cmvn/${part} ${featdir}
+    # delete the split folder
+    rm -rf ${datadir}/${part}/split*
   done
 fi
 
@@ -280,20 +277,23 @@ if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~
     # build the bigram phone-level Lamguage model
     phone_lang=${datadir}/phone_lang_monostate
     #lang=data/lang_nosp replace by the ${langdir}
-    alidir=exp/tri4b_${num_leaves}/align_${train_set}
-    utils/lang/make_phone_bigram_lang.sh ${langdir} $alidir $phone_lang
+    #alidir=exp/tri4b_${num_leaves}/align_${train_set}
+    alidir=${expdir}/mono_ali_$train_set #exp/tri3b
+    #utils/lang/make_phone_unigram_lang.sh ${langdir} $alidir $phone_lang
 
     # decode using the tri4b model and generate the decoding alignment
-    graphdir=${expdir}/tri4b_${num_leaves}/graph_phone_bg
-    utils/mkgraph.sh $phone_lang \
-                     ${expdir}/tri4b_${num_leaves} ${graphdir}
+    #graphdir=${expdir}/tri4b_${num_leaves}/graph_phone_bg
+    graphdir=${expdir}/tri3b/graph_phone_bg
+      #utils/mkgraph.sh $phone_lang \
+      #               ${expdir}/tri3b ${graphdir}
 
   if "${skip_train}"; then
     _dsets="${test_sets}"
   else
-    _dsets="${train_set} ${test_sets}"
+    _dsets="${train_set} ${test_sets} ${train_dev}"
   fi
-  for test in ${_dsets}; do
+#  for test in ${_dsets}; do
+for test in  dev_clean dev_other test_1h train dev ; do # test_clean
   #for test in train_clean_100 test_clean test_other dev_clean dev_other; do
       echo "step 1: decode the ${test} set,generate the lattice "
       #if [ ${test} == "train_clean_100" ]; then
@@ -304,47 +304,33 @@ if [ ${stage} -le 13 ] && [ ${stop_stage} -ge 13 ] && ! [[ " ${skip_stages} " =~
       #  skip_scoring=false
       #fi
       skip_scoring=true
-      _nj=20
-      target_folder=${expdir}/tri4b_${num_leaves}/decode_biphonelm_${test}
+      _nj=40
+      #target_folder=${expdir}/tri4b_${num_leaves}/decode_biphonelm_${test}
+      target_folder=${expdir}/tri3b/decode_uniphonelm_${test}
       steps/decode_fmllr_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
                             --skip_scoring $skip_scoring \
                             ${graphdir} ${datadir}/${test} \
                             ${target_folder}
 
-      # no delta features and no transform-feats
-#      acwt=0.083333 # Acoustic weight used in getting fMLLR transforms, and also in lattice generation.
-#      # may be change the number of beam and the number of max-active to achieve more accurate decoding
-#      alignment_model=${expdir}/tri3b_${num_leaves}/final.mdl
-#      steps/decode_nodelta.sh --nj ${_nj} --cmd "$decode_cmd" \
-#                            --skip_scoring $skip_scoring \
-#                            --acwt $acwt --beam 16 \
-#                            --model $alignment_model \
-#                            --max-active 7000 \
-#                            ${graphdir} ${datadir}/${test} \
-#                            ${target_folder} || exit 1;
       echo "step 2: generate the 1-bet path through lattices"
-
-#      for i in $(seq 1 ${_nj}); do
-#         lattice-best-path "ark,t:gunzip -c $target_folder/lat.$i.gz|" \
-#              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.$i" \
-#              "ark:|gzip -c >$target_folder/ali.$i.gz" 2>/dev/null || exit 1;
-#      done
-#
-#      echo "step 3: extract pdf-id"
-#      for i in ${target_folder}/ali.*.gz;
-#      do ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
-#              "ark,t:gunzip -c $i|" ark,t:${i%.gz}.pdf;
-#      done
       # combine the lattice-best-path and ali-to-pdf with a pipe, so the output of the first command is the input of the second command
       # and we don't need to store the intermediate result $target_folder/ali.$i.gz"
       $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
          lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
               "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
-              ali-to-pdf ${expdir}/tri4b_${num_leaves}/final.mdl \
+              ali-to-pdf ${expdir}/tri3b/final.mdl \
               ark:- ark,t:${target_folder}/ali.JOB.pdf || exit 1;
 
+      cat ${target_folder}/ali*.pdf > ${target_folder}/tri3b_${test}_decode_pdf_alignment
 
-      cat ${target_folder}/ali*.pdf > ${target_folder}/tri4b_${num_leaves}_${test}_decode_pdf_alignment
+      echo "step 3: generate phone id from the decoding alignment"
+      $train_cmd JOB=1:$_nj $target_folder/log/ali_pdf.JOB.log \
+         lattice-best-path "ark,t:gunzip -c $target_folder/lat.JOB.gz|" \
+              "ark,t:|int2sym.pl -f 2- $phone_lang/words.txt > $target_folder/text.JOB" ark:- \| \
+              ali-to-phones --per-frame ${expdir}/tri3b/final.mdl \
+              ark:- ark,t:${target_folder}/ali_phones.JOB.pdf || exit 1;
+
+      cat ${target_folder}/ali_phones*.pdf > ${target_folder}/tri3b_${test}_decode_phones_alignment
   done
 fi
 

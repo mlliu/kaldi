@@ -13,8 +13,19 @@
 
 import sys
 import numpy as np
+import os
+import re
 
 def read_mdl(model):
+    # first check the model, if the model is a final.mdl, we need to convert it to final.mdl.txt
+    if model.endswith("mdl"):
+        model_txt = model + ".txt"
+        cmd = "gmm-copy --binary=false " + model + " " + model_txt
+        print(cmd)
+        os.system(cmd)
+        model = model_txt
+        print("converted model to: ", model)
+
     # num_mixtures is a list, each element is the number of mixtures for each pdf
     num_mixtures = []
     with open(model, 'r') as f:
@@ -42,8 +53,23 @@ def write_gpost_pid(gpost, gpost_pid,num_pdfs, num_mixtures):
     with open(gpost, 'r') as f_gpost, open(gpost_pid, 'w') as f_gpost_pid:
         line=f_gpost.readline()
         while line:
-            assert line.startswith("lbi-") or line.startswith("sp") or line.startswith("sw") or line.startswith("en")
-            if line.startswith("lbi-") or line.startswith("sp") or line.startswith("sw") or line.startswith("en"):
+            # the line should start with "lbi-", or "sp", or "sw", or "en"
+            # or the line start with 3 to 4 number - 1 to 6 number - 4 number
+            uttid_pattern_1 = re.compile(r"^\d{2,4}-\d{1,6}-\d{4}")
+            # patten 2 like ALFFA_amh_000189, M-AILABS_eng_000209
+            uttid_pattern_2 = re.compile(r"^[\w-]+_[a-z]{3,6}_\d{6}")
+            # if the line's start matches the pattern, then we have a new utterance
+            #print("line: ", line)
+            try :
+                assert line.startswith("lbi-") or line.startswith("sp") or line.startswith("sw") or line.startswith("en") \
+                       or uttid_pattern_1.match(line.strip().split()[0]) or uttid_pattern_2.match(line.strip().split()[0]) \
+                        or line.startswith("libri")
+            except:
+                # if the line's start does not match the pattern, then print the line and exit
+                print("line: ", line)
+                sys.exit(1)
+            #assert line.startswith("lbi-") or line.startswith("sp") or line.startswith("sw") or line.startswith("en") or uttid_pattern.match(line.strip().split()[0])
+            if line.startswith("lbi-") or line.startswith("sp") or line.startswith("sw") or line.startswith("en") or uttid_pattern_1.match(line.strip().split()[0]) or uttid_pattern_2.match(line.strip().split()[0]) or line.startswith("libri"):
                 #print("line: ", line)
                 # this means we have a new utterance
                 utt_id = line.strip().split()[0]
